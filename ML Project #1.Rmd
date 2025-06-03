@@ -1,0 +1,265 @@
+---
+title: "Youth and Overall Unemployment In Turkey"
+author: "Ayberk Üzüm"
+date: "2025-06-03"
+output: pdf_document
+---
+
+```{r}
+#packages
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(forecast)
+library(lubridate)
+library(zoo)
+library(ggplot2)
+library(tree)
+library(DiagrammeRsvg)
+library(rsvg)
+library(ggrepel)
+library(caret)
+library(boot)
+#data cleaning
+unemployment_data <- function(filepath) {
+  df <- read_excel(filepath, sheet = 1, skip = 4)
+  df <- df[, 1:10]
+  colnames(df) <- c("Year", "Month", "Population", "Labour_Force", "Employed",
+                    "Unemployed", "Not_in_Labour", "Participation_Rate",
+                    "Employment_Rate", "Unemployment_Rate")
+  
+  df$Year <- zoo::na.locf(df$Year)
+  df <- df %>% filter(grepl("^[0-9]{4}$", Year))
+  
+  df$Month <- df$Month %>%
+    str_remove(" \\(.*\\)") %>%
+    str_trim()
+  
+  df$Month <- case_when(
+    str_detect(df$Month, "Ocak") ~ 1,
+    str_detect(df$Month, "Şubat") ~ 2,
+    str_detect(df$Month, "Mart") ~ 3,
+    str_detect(df$Month, "Nisan") ~ 4,
+    str_detect(df$Month, "Mayıs") ~ 5,
+    str_detect(df$Month, "Haziran") ~ 6,
+    str_detect(df$Month, "Temmuz") ~ 7,
+    str_detect(df$Month, "Ağustos") ~ 8,
+    str_detect(df$Month, "Eylül") ~ 9,
+    str_detect(df$Month, "Ekim") ~ 10,
+    str_detect(df$Month, "Kasım") ~ 11,
+    str_detect(df$Month, "Aralık") ~ 12,
+    TRUE ~ NA_real_
+  )
+  
+  df <- df %>%
+    mutate(
+      Year = as.integer(Year),
+      Month = as.integer(Month),
+      Unemployment_Rate = as.numeric(Unemployment_Rate)
+    ) %>%
+    drop_na(Month, Unemployment_Rate)
+  
+  df$Date <- as.Date(paste(df$Year, df$Month, 1, sep = "-"))
+  
+  return(df %>% arrange(Date))
+}
+#load data
+youth_data <- unemployment_data("C:/Users/User/Desktop/25Spring3/mevsim etkisinden arindirilmis temel isgucu gostergeleri (15-24 yas).xls")
+overall_data <- unemployment_data("C:/Users/User/Desktop/25Spring3/mevsim etkisinden arindirilmis temel isgucu gostergeleri (15+ yas).xls")
+```
+
+```{r}
+#crisis plotting
+
+plotCrisis <- function(df, model_start, model_end,
+                       plot_start, plot_end, title_text) {
+  
+  # subset for model and plotting
+  model_df <- df %>% filter(Year >= model_start & Year <= model_end)
+  plot_df  <- df %>% filter(Year >= plot_start & Year <= plot_end)
+  
+  # add time index and seasonal month factor
+  model_df <- model_df %>%
+    mutate(
+      t = 1:nrow(.),
+      m = factor(Month)
+    )
+  
+  # linear trend and Seasonality
+  reg <- lm(Unemployment_Rate ~ t + m, data = model_df)
+  yhat <- ts(fitted(reg), start = c(model_start, 1), frequency = 12)
+  
+  # hw fit
+  hw_series <- ts(model_df$Unemployment_Rate, start = c(model_start, 1), frequency = 12)
+  hw <- HoltWinters(hw_series)
+  hw_fit <- ts(fitted(hw)[, 1], start = c(model_start, 1), frequency = 12)
+  
+  # full plot
+  actual <- ts(plot_df$Unemployment_Rate, start = c(plot_start, 1), frequency = 12)
+  
+  # plot all
+  ts.plot(actual, yhat, hw_fit,
+          col = c("black", "red", "green"), lwd = 2,
+          main = paste(title_text, "Unemployment Trends"),
+          ylab = "Unemployment Rate (%)", xlab = "Year")
+  
+  legend("topleft",
+         legend = c("Actual", "Trend + Seasonality", "Holt-Winters"),
+         col = c("black", "red", "green"), lty = 1, lwd = 2)
+}
+
+
+# forecast to 2030
+
+forecastTo2030 <- function(df, start_y, end_y,
+                           label = "Series", color = "blue") {
+  
+  ts_data <- ts(
+    df %>% filter(Year >= start_y & Year <= end_y) %>% pull(Unemployment_Rate),
+    start = c(start_y, 1), frequency = 12
+  )
+  
+  # hw forecast 
+  fit <- HoltWinters(ts_data)
+  h <- (2030 - end_y) * 12
+  fc <- forecast(fit, h = h)
+  
+  plot(fc,
+       main = paste(label, "Projection to 2030"),
+       ylab = "Unemployment Rate (%)", xlab = "Year", col = color)
+  
+  lines(ts_data, col = "black", lwd = 2)
+  
+  legend("topleft",
+         legend = c("Observed", "Forecast"),
+         col = c("black", color), lty = 1, lwd = 2)
+}
+# manual plot 
+
+# youth 2008
+plotCrisis(youth_data, 2007, 2009, 2005, 2014, "Youth 2008 Crisis")
+
+# overall 2008
+plotCrisis(overall_data, 2007, 2009, 2005, 2014, "Overall 2008 Crisis")
+
+# youth 2020
+plotCrisis(youth_data, 2019, 2021, 2014, 2023, "Youth 2020 Crisis")
+
+# ovrall 2020
+plotCrisis(overall_data, 2019, 2021, 2014, 2023, "Overall 2020 Crisis")
+
+# 2030 forecast
+
+forecastTo2030(youth_data, 2014, 2023,
+               label = "Youth Unemployment", color = "green")
+
+forecastTo2030(overall_data, 2014, 2023,
+               label = "Overall Unemployment", color = "blue")
+```
+
+```{r}
+# weighted logistic regression
+set.seed(42)
+
+# crisis variable
+youth_data$Crisis <- factor(ifelse(youth_data$Year %in% c(2008, 2020), 1, 0), levels = c(0, 1))
+overall_data$Crisis <- factor(ifelse(overall_data$Year %in% c(2008, 2020), 1, 0), levels = c(0, 1))
+
+# train and test
+youth_split <- createDataPartition(youth_data$Crisis, p = 0.8, list = FALSE)
+overall_split <- createDataPartition(overall_data$Crisis, p = 0.8, list = FALSE)
+
+youth_train <- youth_data[youth_split, ]
+youth_test <- youth_data[-youth_split, ]
+overall_train <- overall_data[overall_split, ]
+overall_test <- overall_data[-overall_split, ]
+# class weights
+weights_youth <- ifelse(youth_train$Crisis == 1, 5, 1)
+weights_overall <- ifelse(overall_train$Crisis == 1, 5, 1)
+
+# weighted logistic models
+youth_logistic_model_weighted <- glm(Crisis ~ Unemployment_Rate, data = youth_train, 
+                                     family = binomial(), weights = weights_youth)
+
+overall_logistic_model_weighted <- glm(Crisis ~ Unemployment_Rate, data = overall_train, 
+                                       family = binomial(), weights = weights_overall)
+
+# predictions
+youth_pred_weighted <- predict(youth_logistic_model_weighted, newdata = youth_test, type = "response")
+youth_pred_class <- ifelse(youth_pred_weighted > 0.5, 1, 0)
+
+overall_pred_weighted <- predict(overall_logistic_model_weighted, newdata = overall_test, type = "response")
+overall_pred_class <- ifelse(overall_pred_weighted > 0.5, 1, 0)
+
+
+
+# cost sensitive decision tree
+
+youth_tree_model_cs <- rpart(Crisis ~ Unemployment_Rate + Labour_Force + Employed + Participation_Rate + Employment_Rate, 
+                             data = youth_train, 
+                             method = "class", 
+                             parms = list(loss = matrix(c(0, 5, 1, 0), nrow = 2)),
+                             control = rpart.control(cp = 0.0001, minsplit = 2, minbucket = 1))
+
+overall_tree_model_cs <- rpart(Crisis ~ Unemployment_Rate + Labour_Force + Employed + Participation_Rate + Employment_Rate, 
+                               data = overall_train, 
+                               method = "class", 
+                               parms = list(loss = matrix(c(0, 5, 1, 0), nrow = 2)),
+                               control = rpart.control(cp = 0.0001, minsplit = 2, minbucket = 1))
+
+# cp values
+youth_cp_cs <- youth_tree_model_cs$cptable[which.min(youth_tree_model_cs$cptable[,"xerror"]), "CP"]
+overall_cp_cs <- overall_tree_model_cs$cptable[which.min(overall_tree_model_cs$cptable[,"xerror"]), "CP"]
+
+# pruning
+pruned_tree_youth_cs <- prune(youth_tree_model_cs, cp = youth_cp_cs)
+pruned_tree_overall_cs <- prune(overall_tree_model_cs, cp = overall_cp_cs)
+
+# predictions
+youth_tree_pred_cs <- predict(pruned_tree_youth_cs, newdata = youth_test, type = "class")
+overall_tree_pred_cs <- predict(pruned_tree_overall_cs, newdata = overall_test, type = "class")
+
+#bootstrap resampling for confidence intervals
+bootstrap_lr <- function(data, indices) {
+  d <- data[indices, ]
+  model <- glm(Crisis ~ Unemployment_Rate, data = d, family = binomial())
+  return(coef(model))
+}
+
+# bootstrapping
+results_youth_lr <- boot(data = youth_train, statistic = bootstrap_lr, R = 1000)
+results_overall_lr <- boot(data = overall_train, statistic = bootstrap_lr, R = 1000)
+
+# calculation of success ratios
+youth_logistic_acc <- mean(youth_pred_class == youth_test$Crisis) * 100
+overall_logistic_acc <- mean(overall_pred_class == overall_test$Crisis) * 100
+
+youth_tree_acc <- mean(youth_tree_pred_cs == youth_test$Crisis) * 100
+overall_tree_acc <- mean(overall_tree_pred_cs == overall_test$Crisis) * 100
+
+# edit the results as dataframe
+model_accuracies <- data.frame(
+  Model = c("Youth Logistic Regression", "Overall Logistic Regression", 
+            "Youth Decision Tree", "Overall Decision Tree"),
+  Accuracy = c(youth_logistic_acc, overall_logistic_acc, 
+               youth_tree_acc, overall_tree_acc)
+)
+
+# colors
+colors <- c("Youth Logistic Regression" = "red", 
+            "Overall Logistic Regression" = "black", 
+            "Youth Decision Tree" = "blue", 
+            "Overall Decision Tree" = "gold")
+
+# bar chart
+ggplot(model_accuracies, aes(x = Model, y = Accuracy, fill = Model)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  labs(title = "Model Accuracy Comparison",
+       x = "Model",
+       y = "Accuracy (%)") +
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
