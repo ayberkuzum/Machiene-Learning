@@ -1,0 +1,1 @@
+This project analyzes the effects of 2008 and 2020 economic crisis on youth and overall unemployment rates in Turkey via SMOTE applied logistic regression and decision tree,holt-winters and seasonal regression. It also includes forecast to 2030 additionally.
